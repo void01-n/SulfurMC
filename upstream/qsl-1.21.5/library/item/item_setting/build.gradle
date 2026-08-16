@@ -1,0 +1,36 @@
+import org.objectweb.asm.Opcodes
+import qsl.internal.analysis.ClassAnalysisUtils
+
+import java.nio.file.FileSystem
+import java.nio.file.FileSystems
+import java.util.stream.Collectors
+
+plugins {
+	id("qsl.module")
+}
+
+qslModule {
+	name = "Quilt Item Setting API"
+	moduleName = "item_setting"
+	id = "quilt_item_setting"
+	description = "An API for extended functionality in Item Settings"
+	moduleDependencies {
+		core {
+			api("qsl_base")
+			testmodOnly("resource_loader")
+			testmodOnly("lifecycle_events")
+			testmodOnly("networking")
+		}
+		item {
+			testmodOnly("item_content_registry")
+		}
+		gui {
+			// FIXME this shouldn't be necessary since resource_loader already depends on it,
+			//  but it's not actually present for the testmod for some reason
+			testmodOnly("screen")
+		}
+	}
+	injectedInterface('net/minecraft/class_1792$class_1793') {
+		values = ['org/quiltmc/qsl/item/setting/api/QuiltItemSettingsExtensions']
+	}
+}

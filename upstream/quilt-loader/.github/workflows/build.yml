@@ -1,0 +1,39 @@
+name: Build
+on:
+  push:
+    branches:
+      - develop
+      - release
+  pull_request:
+
+jobs:
+# Since both build and publish run on the same jvm, there's no reason to build twice.
+# If/when we want to run on multiple jvms again just uncomment this block, and the
+# "needs: build" line in "publish" to bring it back.
+#  build:
+#    strategy:
+#      matrix:
+#        java: [17-jdk]
+#    runs-on: ubuntu-22.04
+#    container:
+#      image: eclipse-temurin:${{ matrix.java }}
+#      options: --user root
+#    steps:
+#      - uses: actions/checkout@v3
+#      - uses: gradle/wrapper-validation-action@v1
+#      - run: ./gradlew build --stacktrace
+
+  publish:
+#   needs: build
+    runs-on: ubuntu-22.04
+    container:
+      image: eclipse-temurin:21
+      options: --user root
+    steps:
+      - uses: actions/checkout@v3
+      - uses: gradle/wrapper-validation-action@v1
+      - run: ./gradlew build publish --stacktrace
+#        env:
+#          SNAPSHOTS_URL: ${{ secrets.SNAPSHOTS_URL }}
+#          SNAPSHOTS_USERNAME: ${{ secrets.SNAPSHOTS_USERNAME }}
+#          SNAPSHOTS_PASSWORD: ${{ secrets.SNAPSHOTS_PASSWORD }}

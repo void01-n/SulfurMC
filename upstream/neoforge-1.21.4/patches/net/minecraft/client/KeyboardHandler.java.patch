@@ -1,0 +1,57 @@
+--- a/net/minecraft/client/KeyboardHandler.java
++++ b/net/minecraft/client/KeyboardHandler.java
+@@ -426,12 +_,20 @@
+             if (screen != null) {
+                 try {
+                     if (p_90897_ != 1 && p_90897_ != 2) {
+-                        if (p_90897_ == 0 && screen.keyReleased(p_90895_, p_90896_, p_90898_)) {
++                        if (p_90897_ == 0 && (
++                            net.neoforged.neoforge.client.ClientHooks.onScreenKeyReleasedPre(screen, p_90895_, p_90896_, p_90898_) ||
++                            screen.keyReleased(p_90895_, p_90896_, p_90898_) ||
++                            net.neoforged.neoforge.client.ClientHooks.onScreenKeyReleasedPost(screen, p_90895_, p_90896_, p_90898_))
++                        ) {
+                             return;
+                         }
+                     } else {
+                         screen.afterKeyboardAction();
+-                        if (screen.keyPressed(p_90895_, p_90896_, p_90898_)) {
++                        if (
++                            net.neoforged.neoforge.client.ClientHooks.onScreenKeyPressedPre(screen, p_90895_, p_90896_, p_90898_) ||
++                            screen.keyPressed(p_90895_, p_90896_, p_90898_) ||
++                            net.neoforged.neoforge.client.ClientHooks.onScreenKeyPressedPost(screen, p_90895_, p_90896_, p_90898_)
++                        ) {
+                             return;
+                         }
+                     }
+@@ -507,6 +_,7 @@
+                     }
+                 }
+             }
++            net.neoforged.neoforge.client.ClientHooks.onKeyInput(p_90895_, p_90896_, p_90897_, p_90898_);
+         }
+     }
+ 
+@@ -516,10 +_,20 @@
+             if (screen != null && this.minecraft.getOverlay() == null) {
+                 try {
+                     if (Character.isBmpCodePoint(p_90891_)) {
+-                        screen.charTyped((char)p_90891_, p_90892_);
++                        if (net.neoforged.neoforge.client.ClientHooks.onScreenCharTypedPre(screen, (char)p_90891_, p_90892_)) return;
++                        if (screen.charTyped((char)p_90891_, p_90892_)) return;
++                        net.neoforged.neoforge.client.ClientHooks.onScreenCharTypedPost(screen, (char)p_90891_, p_90892_);
+                     } else if (Character.isValidCodePoint(p_90891_)) {
+-                        screen.charTyped(Character.highSurrogate(p_90891_), p_90892_);
+-                        screen.charTyped(Character.lowSurrogate(p_90891_), p_90892_);
++                        if (!net.neoforged.neoforge.client.ClientHooks.onScreenCharTypedPre(screen, Character.highSurrogate(p_90891_), p_90892_)) {
++                            if (!screen.charTyped(Character.highSurrogate(p_90891_), p_90892_)) {
++                                net.neoforged.neoforge.client.ClientHooks.onScreenCharTypedPost(screen, Character.highSurrogate(p_90891_), p_90892_);
++                            }
++                        }
++                        if (!net.neoforged.neoforge.client.ClientHooks.onScreenCharTypedPre(screen, Character.lowSurrogate(p_90891_), p_90892_)) {
++                            if (!screen.charTyped(Character.lowSurrogate(p_90891_), p_90892_)) {
++                                net.neoforged.neoforge.client.ClientHooks.onScreenCharTypedPost(screen, Character.lowSurrogate(p_90891_), p_90892_);
++                            }
++                        }
+                     }
+                 } catch (Throwable throwable) {
+                     CrashReport crashreport = CrashReport.forThrowable(throwable, "charTyped event handler");

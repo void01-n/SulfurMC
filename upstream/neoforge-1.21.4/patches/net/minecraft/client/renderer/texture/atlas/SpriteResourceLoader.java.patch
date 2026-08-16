@@ -1,0 +1,29 @@
+--- a/net/minecraft/client/renderer/texture/atlas/SpriteResourceLoader.java
++++ b/net/minecraft/client/renderer/texture/atlas/SpriteResourceLoader.java
+@@ -25,7 +_,7 @@
+     Logger LOGGER = LogUtils.getLogger();
+ 
+     static SpriteResourceLoader create(Collection<MetadataSectionType<?>> p_296204_) {
+-        return (p_389362_, p_389363_) -> {
++        return (p_389362_, p_389363_, constructor) -> {
+             ResourceMetadata resourcemetadata;
+             try {
+                 resourcemetadata = p_389363_.metadata().copySections(p_296204_);
+@@ -62,10 +_,15 @@
+                 framesize = new FrameSize(nativeimage.getWidth(), nativeimage.getHeight());
+             }
+ 
+-            return new SpriteContents(p_389362_, framesize, nativeimage, resourcemetadata);
++            return constructor.create(p_389362_, framesize, nativeimage, resourcemetadata);
+         };
+     }
+ 
+     @Nullable
+-    SpriteContents loadSprite(ResourceLocation p_295581_, Resource p_294329_);
++    default SpriteContents loadSprite(ResourceLocation p_295581_, Resource p_294329_) {
++        return loadSprite(p_295581_, p_294329_, SpriteContents::new);
++    }
++
++    @Nullable
++    SpriteContents loadSprite(ResourceLocation id, Resource resource, net.neoforged.neoforge.client.textures.SpriteContentsConstructor constructor);
+ }

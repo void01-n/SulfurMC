@@ -1,0 +1,279 @@
+--- a/net/minecraft/client/renderer/LevelRenderer.java
++++ b/net/minecraft/client/renderer/LevelRenderer.java
+@@ -459,7 +_,7 @@
+         this.targets.main = framegraphbuilder.importExternal("main", this.minecraft.getMainRenderTarget());
+         int i = this.minecraft.getMainRenderTarget().width;
+         int j = this.minecraft.getMainRenderTarget().height;
+-        RenderTargetDescriptor rendertargetdescriptor = new RenderTargetDescriptor(i, j, true);
++        RenderTargetDescriptor rendertargetdescriptor = new RenderTargetDescriptor(i, j, true, this.minecraft.getMainRenderTarget().useStencil);
+         PostChain postchain = this.getTransparencyChain();
+         if (postchain != null) {
+             this.targets.translucent = framegraphbuilder.createInternal("translucent", rendertargetdescriptor);
+@@ -473,6 +_,9 @@
+             this.targets.entityOutline = framegraphbuilder.importExternal("entity_outline", this.entityOutlineTarget);
+         }
+ 
++        var setupEvent = net.neoforged.neoforge.client.ClientHooks.fireFrameGraphSetup(framegraphbuilder, this.targets, rendertargetdescriptor, frustum, p_109604_, p_254120_, p_323920_, p_348530_, profilerfiller);
++        flag2 |= setupEvent.isOutlineProcessingEnabled();
++
+         FramePass framepass = framegraphbuilder.addPass("clear");
+         this.targets.main = framepass.readsAndWrites(this.targets.main);
+         framepass.executes(() -> {
+@@ -480,7 +_,7 @@
+             RenderSystem.clear(16640);
+         });
+         if (!flag1) {
+-            this.addSkyPass(framegraphbuilder, p_109604_, f, fogparameters1);
++            this.addSkyPass(framegraphbuilder, p_109604_, f, fogparameters1, p_254120_, p_323920_);
+         }
+ 
+         this.addMainPass(framegraphbuilder, frustum, p_109604_, p_254120_, p_323920_, fogparameters, p_109603_, flag2, p_348530_, profilerfiller);
+@@ -489,7 +_,7 @@
+             postchain1.addToFrame(framegraphbuilder, i, j, this.targets);
+         }
+ 
+-        this.addParticlesPass(framegraphbuilder, p_109604_, f, fogparameters);
++        this.addParticlesPass(framegraphbuilder, p_109604_, f, fogparameters, frustum, p_254120_, p_323920_);
+         CloudStatus cloudstatus = this.minecraft.options.getCloudsType();
+         if (cloudstatus != CloudStatus.OFF) {
+             float f2 = this.level.effects().getCloudHeight();
+@@ -500,7 +_,7 @@
+             }
+         }
+ 
+-        this.addWeatherPass(framegraphbuilder, p_109604_.getPosition(), f, fogparameters);
++        this.addWeatherPass(framegraphbuilder, p_109604_.getPosition(), f, fogparameters, p_254120_, p_323920_, p_109604_);
+         if (postchain != null) {
+             postchain.addToFrame(framegraphbuilder, i, j, this.targets);
+         }
+@@ -571,7 +_,9 @@
+             double d2 = vec3.z();
+             p_362234_.push("terrain");
+             this.renderSectionLayer(RenderType.solid(), d0, d1, d2, p_362420_, p_361272_);
++            this.minecraft.getModelManager().getAtlas(net.minecraft.client.renderer.texture.TextureAtlas.LOCATION_BLOCKS).setBlurMipmap(false, this.minecraft.options.mipmapLevels().get() > 0); // Neo: fix flickering leaves when mods mess up the blurMipmap settings
+             this.renderSectionLayer(RenderType.cutoutMipped(), d0, d1, d2, p_362420_, p_361272_);
++            this.minecraft.getModelManager().getAtlas(net.minecraft.client.renderer.texture.TextureAtlas.LOCATION_BLOCKS).restoreLastBlurMipmap();
+             this.renderSectionLayer(RenderType.cutout(), d0, d1, d2, p_362420_, p_361272_);
+             if (this.level.effects().constantAmbientLight()) {
+                 Lighting.setupNetherLevel();
+@@ -603,6 +_,7 @@
+             p_362234_.popPush("entities");
+             this.renderEntities(posestack, multibuffersource$buffersource, p_363453_, p_360931_, this.visibleEntities);
+             multibuffersource$buffersource.endLastBatch();
++            net.neoforged.neoforge.client.ClientHooks.dispatchRenderStage(net.neoforged.neoforge.client.event.RenderLevelStageEvent.Stage.AFTER_ENTITIES, level, this, posestack, p_362420_, p_361272_, this.ticks, p_363453_, p_366590_);
+             this.checkPoseStack(posestack);
+             p_362234_.popPush("blockentities");
+             this.renderBlockEntities(posestack, multibuffersource$buffersource, multibuffersource$buffersource1, p_363453_, f);
+@@ -619,6 +_,7 @@
+             multibuffersource$buffersource.endBatch(Sheets.hangingSignSheet());
+             multibuffersource$buffersource.endBatch(Sheets.chestSheet());
+             this.renderBuffers.outlineBufferSource().endOutlineBatch();
++            net.neoforged.neoforge.client.ClientHooks.dispatchRenderStage(net.neoforged.neoforge.client.event.RenderLevelStageEvent.Stage.AFTER_BLOCK_ENTITIES, level, this, posestack, p_362420_, p_361272_, this.ticks, p_363453_, p_366590_);
+             if (p_363964_) {
+                 this.renderBlockOutline(p_363453_, multibuffersource$buffersource, posestack, false);
+             }
+@@ -639,6 +_,11 @@
+             multibuffersource$buffersource1.endBatch();
+             this.checkPoseStack(posestack);
+             multibuffersource$buffersource.endBatch(RenderType.waterMask());
++            // Neo: in Fast/Fancy, render solid particles before translucent geometry so they don't disappear underwater (MC-161917)
++            if (this.targets.particles == null) {
++                p_362234_.popPush("solid_particles");
++                this.minecraft.particleEngine.render(p_363453_, f, this.renderBuffers.bufferSource(), p_366590_, type -> !type.translucent());
++            }
+             multibuffersource$buffersource.endBatch();
+             if (resourcehandle1 != null) {
+                 resourcehandle1.get().setClearColor(0.0F, 0.0F, 0.0F, 0.0F);
+@@ -659,7 +_,15 @@
+         });
+     }
+ 
++    /**
++     * @deprecated Neo: use {@link #addParticlesPass(FrameGraphBuilder, Camera, float, FogParameters, Frustum, Matrix4f, Matrix4f)} instead
++     */
++    @Deprecated
+     private void addParticlesPass(FrameGraphBuilder p_363357_, Camera p_365299_, float p_364282_, FogParameters p_362149_) {
++        addParticlesPass(p_363357_, p_365299_, p_364282_, p_362149_, this.capturedFrustum != null ? this.capturedFrustum : this.cullingFrustum, RenderSystem.getModelViewMatrix(), RenderSystem.getProjectionMatrix());
++    }
++
++    private void addParticlesPass(FrameGraphBuilder p_363357_, Camera p_365299_, float p_364282_, FogParameters p_362149_, Frustum frustum, Matrix4f modelViewMatrix, Matrix4f projectionMatrix) {
+         FramePass framepass = p_363357_.addPass("particles");
+         if (this.targets.particles != null) {
+             this.targets.particles = framepass.readsAndWrites(this.targets.particles);
+@@ -678,7 +_,8 @@
+                 resourcehandle1.get().copyDepthFrom(resourcehandle.get());
+             }
+ 
+-            this.minecraft.particleEngine.render(p_365299_, p_364282_, this.renderBuffers.bufferSource());
++            this.minecraft.particleEngine.render(p_365299_, p_364282_, this.renderBuffers.bufferSource(), frustum, resourcehandle1 == null ? type -> type.translucent() : type -> true); // Neo: only render translucent particles here in Fast/Fancy
++            net.neoforged.neoforge.client.ClientHooks.dispatchRenderStage(net.neoforged.neoforge.client.event.RenderLevelStageEvent.Stage.AFTER_PARTICLES, level, this, null, modelViewMatrix, projectionMatrix, this.ticks, p_365299_, getFrustum());
+         });
+     }
+ 
+@@ -706,11 +_,20 @@
+                 resourcehandle.get().clear();
+             }
+ 
++            if (!level.effects().renderClouds(level, ticks, p_365209_, p_362985_.x, p_362985_.y, p_362985_.z, p_362864_, p_360602_))
+             this.cloudRenderer.render(p_362342_, p_364196_, p_362337_, p_362864_, p_360602_, p_362985_, p_365209_);
+         });
+     }
+ 
++    /**
++     * @deprecated Neo: use {@link #addWeatherPass(FrameGraphBuilder, Vec3, float, FogParameters, Matrix4f, Matrix4f, Camera)} instead
++     */
++    @Deprecated
+     private void addWeatherPass(FrameGraphBuilder p_364025_, Vec3 p_360771_, float p_362434_, FogParameters p_360974_) {
++        addWeatherPass(p_364025_, p_360771_, p_362434_, p_360974_, RenderSystem.getModelViewMatrix(), RenderSystem.getProjectionMatrix(), this.minecraft.gameRenderer.getMainCamera());
++    }
++
++    private void addWeatherPass(FrameGraphBuilder p_364025_, Vec3 p_360771_, float p_362434_, FogParameters p_360974_, Matrix4f modelViewMatrix, Matrix4f projectionMatrix, Camera camera) {
+         int i = this.minecraft.options.getEffectiveRenderDistance() * 16;
+         float f = this.minecraft.gameRenderer.getDepthFar();
+         FramePass framepass = p_364025_.addPass("weather");
+@@ -724,6 +_,7 @@
+             RenderSystem.setShaderFog(p_360974_);
+             MultiBufferSource.BufferSource multibuffersource$buffersource = this.renderBuffers.bufferSource();
+             this.weatherEffectRenderer.render(this.minecraft.level, multibuffersource$buffersource, this.ticks, p_362434_, p_360771_);
++            net.neoforged.neoforge.client.ClientHooks.dispatchRenderStage(net.neoforged.neoforge.client.event.RenderLevelStageEvent.Stage.AFTER_WEATHER, level, this, null, modelViewMatrix, projectionMatrix, this.ticks, camera, getFrustum());
+             this.worldBorderRenderer.render(this.level.getWorldBorder(), p_360771_, (double)i, (double)f);
+             multibuffersource$buffersource.endBatch();
+         });
+@@ -768,11 +_,14 @@
+                             || p_363510_.isDetached()
+                             || p_363510_.getEntity() instanceof LivingEntity && ((LivingEntity)p_363510_.getEntity()).isSleeping()
+                     )
+-                    && (!(entity instanceof LocalPlayer) || p_363510_.getEntity() == entity)) {
++                        && (!(entity instanceof LocalPlayer) || p_363510_.getEntity() == entity || (entity == minecraft.player && !minecraft.player.isSpectator()))) { // Neo: render local player entity when it is not the camera entity
+                     p_363380_.add(entity);
+                     if (flag1 && this.minecraft.shouldEntityAppearGlowing(entity)) {
+                         flag = true;
+                     }
++                    else if (flag1 && entity.hasCustomOutlineRendering(this.minecraft.player)) { // FORGE: allow custom outline rendering
++                        flag = true;
++                    }
+                 }
+             }
+         }
+@@ -818,10 +_,12 @@
+         double d1 = vec3.y();
+         double d2 = vec3.z();
+ 
++        Frustum frustum = getFrustum();
+         for (SectionRenderDispatcher.RenderSection sectionrenderdispatcher$rendersection : this.visibleSections) {
+             List<BlockEntity> list = sectionrenderdispatcher$rendersection.getCompiled().getRenderableBlockEntities();
+             if (!list.isEmpty()) {
+                 for (BlockEntity blockentity : list) {
++                    if (!net.neoforged.neoforge.client.ClientHooks.isBlockEntityRendererVisible(blockEntityRenderDispatcher, blockentity, frustum)) continue;
+                     BlockPos blockpos = blockentity.getBlockPos();
+                     MultiBufferSource multibuffersource = p_363819_;
+                     p_362832_.pushPose();
+@@ -849,6 +_,7 @@
+ 
+         synchronized (this.globalBlockEntities) {
+             for (BlockEntity blockentity1 : this.globalBlockEntities) {
++                if (!net.neoforged.neoforge.client.ClientHooks.isBlockEntityRendererVisible(blockEntityRenderDispatcher, blockentity1, frustum)) continue;
+                 BlockPos blockpos1 = blockentity1.getBlockPos();
+                 p_362832_.pushPose();
+                 p_362832_.translate((double)blockpos1.getX() - d0, (double)blockpos1.getY() - d1, (double)blockpos1.getZ() - d2);
+@@ -876,9 +_,10 @@
+                     VertexConsumer vertexconsumer = new SheetedDecalTextureGenerator(
+                         p_365216_.getBuffer(ModelBakery.DESTROY_TYPES.get(i)), posestack$pose, 1.0F
+                     );
++                    net.neoforged.neoforge.client.model.data.ModelData modelData = level.getModelData(blockpos);
+                     this.minecraft
+                         .getBlockRenderer()
+-                        .renderBreakingTexture(this.level.getBlockState(blockpos), blockpos, this.level, p_363901_, vertexconsumer);
++                        .renderBreakingTexture(this.level.getBlockState(blockpos), blockpos, this.level, p_363901_, vertexconsumer, modelData);
+                     p_363901_.popPose();
+                 }
+             }
+@@ -890,8 +_,9 @@
+             if (blockhitresult.getType() != HitResult.Type.MISS) {
+                 BlockPos blockpos = blockhitresult.getBlockPos();
+                 BlockState blockstate = this.level.getBlockState(blockpos);
++                if (!net.neoforged.neoforge.client.ClientHooks.onDrawHighlight(this, p_363911_, blockhitresult, this.minecraft.getDeltaTracker(), p_361893_, p_362782_, p_361698_))
+                 if (!blockstate.isAir() && this.level.getWorldBorder().isWithinBounds(blockpos)) {
+-                    boolean flag = ItemBlockRenderTypes.getChunkRenderType(blockstate).sortOnUpload();
++                    boolean flag = net.neoforged.neoforge.client.ClientHooks.isInTranslucentBlockOutlinePass(this.level, blockpos, blockstate);
+                     if (flag != p_361698_) {
+                         return;
+                     }
+@@ -1019,6 +_,7 @@
+             compiledshaderprogram.clear();
+             VertexBuffer.unbind();
+             zone.close();
++            net.neoforged.neoforge.client.ClientHooks.dispatchRenderStage(p_294513_, level, this, p_294782_, p_324517_, this.ticks, this.minecraft.gameRenderer.getMainCamera(), this.getFrustum());
+             p_294513_.clearRenderState();
+         }
+     }
+@@ -1059,7 +_,15 @@
+         }
+     }
+ 
++    /**
++     * @deprecated Neo: use {@link #addSkyPass(FrameGraphBuilder, Camera, float, FogParameters, Matrix4f, Matrix4f)} instead
++     */
++    @Deprecated
+     private void addSkyPass(FrameGraphBuilder p_362870_, Camera p_362177_, float p_363799_, FogParameters p_364999_) {
++        addSkyPass(p_362870_, p_362177_, p_363799_, p_364999_, RenderSystem.getModelViewMatrix(), RenderSystem.getProjectionMatrix());
++    }
++
++    private void addSkyPass(FrameGraphBuilder p_362870_, Camera p_362177_, float p_363799_, FogParameters p_364999_, Matrix4f modelViewMatrix, Matrix4f projectionMatrix) {
+         FogType fogtype = p_362177_.getFluidInCamera();
+         if (fogtype != FogType.POWDER_SNOW && fogtype != FogType.LAVA && !this.doesMobEffectBlockSky(p_362177_)) {
+             DimensionSpecialEffects dimensionspecialeffects = this.level.effects();
+@@ -1068,6 +_,7 @@
+                 FramePass framepass = p_362870_.addPass("sky");
+                 this.targets.main = framepass.readsAndWrites(this.targets.main);
+                 framepass.executes(() -> {
++                    if (!level.effects().renderSky(level, ticks, p_363799_, modelViewMatrix, p_362177_, projectionMatrix, () -> RenderSystem.setShaderFog(p_364999_))) {
+                     RenderSystem.setShaderFog(p_364999_);
+                     if (dimensionspecialeffects$skytype == DimensionSpecialEffects.SkyType.END) {
+                         this.skyRenderer.renderEndSky();
+@@ -1095,6 +_,8 @@
+                             this.skyRenderer.renderDarkDisc(posestack);
+                         }
+                     }
++                    }
++                    net.neoforged.neoforge.client.ClientHooks.dispatchRenderStage(net.neoforged.neoforge.client.event.RenderLevelStageEvent.Stage.AFTER_SKY, level, this, null, modelViewMatrix, projectionMatrix, this.ticks, p_362177_, getFrustum());
+                 });
+             }
+         }
+@@ -1387,7 +_,7 @@
+         } else {
+             int i = p_109538_.getBrightness(LightLayer.SKY, p_109540_);
+             int j = p_109538_.getBrightness(LightLayer.BLOCK, p_109540_);
+-            int k = p_109539_.getLightEmission();
++            int k = p_109539_.getLightEmission(p_109538_, p_109540_);
+             if (j < k) {
+                 j = k;
+             }
+@@ -1449,5 +_,27 @@
+ 
+     public CloudRenderer getCloudRenderer() {
+         return this.cloudRenderer;
++    }
++
++    public Frustum getFrustum() {
++        return this.capturedFrustum != null ? this.capturedFrustum : this.cullingFrustum;
++    }
++
++    public int getTicks() {
++        return this.ticks;
++    }
++
++    public void iterateVisibleBlockEntities(java.util.function.Consumer<BlockEntity> blockEntityConsumer) {
++        for (var chunkInfo : this.visibleSections) {
++            chunkInfo.getCompiled().getRenderableBlockEntities().forEach(blockEntityConsumer);
++        }
++        synchronized (this.globalBlockEntities) {
++            this.globalBlockEntities.forEach(blockEntityConsumer);
++        }
++    }
++
++    @org.jetbrains.annotations.ApiStatus.Internal
++    public Iterable<? extends net.neoforged.neoforge.client.IRenderableSection> getRenderableSections() {
++            return this.visibleSections;
+     }
+ }

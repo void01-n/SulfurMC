@@ -1,0 +1,37 @@
+plugins {
+	id("qsl.module")
+}
+
+qslModule {
+	name = "Quilt Networking"
+	moduleName = "networking"
+	id = "quilt_networking"
+	description = "Utilites to assist with sending custom packets over the Minecraft protocol."
+	moduleDependencies {
+		core {
+			api("qsl_base")
+			api("lifecycle_events")
+		}
+		management {
+			testmodOnly("command")
+		}
+		gui {
+			testmodOnly("screen") // for resource loader
+		}
+	}
+	entrypoints {
+		init {
+			values = [
+				"org.quiltmc.qsl.networking.impl.NetworkingImpl::init",
+				"org.quiltmc.qsl.networking.impl.common.CommonPacketsImpl::init"
+			]
+		}
+		client_init {
+			values = ["org.quiltmc.qsl.networking.impl.client.ClientNetworkingImpl::clientInit"]
+		}
+	}
+
+	injectedInterface("net/minecraft/class_8610") {
+		values = ["org/quiltmc/qsl/networking/api/server/ServerConfigurationTaskManager"]
+	}
+}
