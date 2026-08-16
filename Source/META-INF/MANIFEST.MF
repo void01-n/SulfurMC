@@ -1,0 +1,5 @@
+Manifest-Version: 1.0
+Main-Class: lol.void01n.sulfur.bootstrap.SulfurBootstrap
+Implementation-Title: Sulfur
+Implementation-Version: 1.0.0-dev
+
