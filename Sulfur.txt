@@ -1,1 +1,566 @@
 Sulfur — Specification & Blueprint
+====================================
+Last updated: 2026-08-15
+Made by: @void01-n (some platforms it's @void01_n)
+
+
+1. CORE CONCEPT
+----------------
+Sulfur is a standalone, unified Minecraft modloader. It is not a
+baseplate, not a client, and does not depend on anything else to
+function — void01 (the former baseplate/SDK layer that third-party
+"clients" like Lunar/Badlion-style products would have built on top
+of) has been dropped from the project entirely, along with all
+"void01" and "Abyss" branding. Sulfur was formerly named "Abyss" and
+sat underneath the void01 baseplate; it is now released and developed
+as its own standalone product.
+
+Mods (gameplay mods, content mods, etc.) are handled entirely by
+Sulfur. NeoForge/FML and Fabric Loader are not separate loaders
+running inside Sulfur; their required loader functionality is fully
+absorbed and unified directly into Sulfur. Forge is not supported.
+Quilt is not supported — Sulfur previously absorbed Quilt's loader
+stack (Knot/BootLauncher) and shipped SSL, a QSL-forked Fabric
+compatibility shim, to translate Fabric-built mods onto that Quilt
+substrate. Both have been dropped (see Section 7, v1.16). Quilt Loader
+was itself a fork of Fabric Loader, so absorbing Fabric Loader's own
+upstream directly reuses the same architectural work Sulfur already
+scoped for Quilt, pointed at the original instead of the fork — it is
+a substitution, not new scope. Native Fabric absorption also removes
+the translation layer entirely: Fabric mods now run against a faithful
+reproduction of the real Fabric API/Loader surface instead of a
+remapped-to-QSL approximation, so there is no remapping table to
+maintain and no silent-passthrough failure mode for API classes SSL
+didn't cover.
+
+There is no "pick a loader" step. Users do not choose NeoForge or
+Fabric as a loader. Sulfur is the loader and determines the required
+compatibility and loader functionality for each active mod. The only
+per-mod choice is which compatible version/build of that mod to load
+when multiple builds exist.
+
+Sulfur owns the complete mod-loading responsibility, including mod
+discovery, dependency resolution, entrypoint/event-bus invocation,
+registries, classloading, transformation, Mixin infrastructure, and
+filesystem/provider infrastructure.
+
+Mods can be added on the go, without a restart — see Section 4 for
+how the live scan/reload behavior works.
+
+Known tradeoff (see Section 7, v1.16): native Quilt-only mods — mods
+with no fabric.mod.json fallback that depend on QSL-only APIs — no
+longer run under Sulfur. Given Fabric's larger mod base and that most
+Quilt-compatible mods already ship a fabric.mod.json for cross-loader
+support, this is judged an acceptable trade. If Quilt-only support is
+wanted later, it would be a Quilt-compat shim built the same shape as
+the old SSL, just retargeted — not a reason to keep Quilt as a native
+loader.
+
+
+2. LAYER STACK
+---------------
+  [1] Vanilla Minecraft
+  [2] Loader layer — NeoForge and Fabric Loader do not run as two
+        side-by-side loader processes. Their underlying bootstrap
+        substrate is UNIFIED into a single owned loader core, Sulfur.
+        Sulfur is not "three things handed off to each other" — it IS
+        the whole chain, with no handoff boundary: JVM entry point,
+        classload/transform engine, and transforming classloader are
+        one component. Concretely, Sulfur absorbs FOUR upstream
+        pieces (see Section 5 for the full breakdown):
+          - NeoForge side: BootstrapLauncher (JVM entry/module setup)
+            + ModLauncher (classload/transform engine + transforming
+            classloader).
+          - Fabric side: Knot.init() itself (there is no separate
+            pre-classpath bootstrap stage the way NeoForge/Quilt have —
+            confirmed against real FabricMC/fabric-loader source, see
+            RESOLVED note in Section 5) reads java.class.path directly
+            and constructs KnotClassLoaderInterface inline. Jar-in-jar
+            mod packaging uses the JDK's built-in jar: URI scheme
+            (standard ZipFileSystemProvider) — Fabric Loader registers
+            NO custom FileSystemProvider of its own, unlike Quilt's
+            fork.
+        Sulfur also owns the single registered Sponge Mixin
+        IMixinService (replacing MixinServiceKnot and FML's
+        ModLauncher-based service, which cannot both be registered at
+        once — Mixin only supports one active IMixinService per JVM).
+        Sulfur's unified service routes mixin configs from both
+        NeoForge-declared and Fabric-declared mods through the same
+        transformation pipeline. This is what actually stops the two
+        ecosystems from "fighting" — a side-by-side model risks the
+        same class being loaded twice under different classloader
+        identities, causing ClassCastExceptions the moment a Fabric
+        mod and a NeoForge mod touched the same shared Minecraft class.
+
+        Above the classloading substrate, there are no separate
+        NeoForge or Fabric higher-level loader subsystems. Sulfur
+        absorbs the complete loader functionality of both ecosystems,
+        including mod discovery, dependency resolution, entrypoint/
+        event-bus invocation, registries, and their associated loader
+        infrastructure — not just a shared classloading substrate.
+
+        No compatibility-shim layer either — Fabric mods run natively
+        against Sulfur's own reproduction of the Fabric Loader API
+        surface, not through a translation/remapping layer. There is
+        no loader-selection step: Sulfur determines and initializes
+        the required compatibility and loader functionality for each
+        active mod.
+
+        -> Sulfur owns the unified JVM bootstrap, classloader,
+        transformation engine, Mixin service, mod discovery,
+        dependency resolution, entrypoints/event-bus systems,
+        registries, and filesystem infrastructure. The relevant
+        functionality is derived from and unified across the
+        NeoForge/FML and Fabric Loader stacks rather than running as
+        separate loader subsystems.
+
+        See Section 5 for the full unified-loader architecture and
+        Section 6 for implementation difficulty.
+
+
+3. [RETIRED — SSL / QSL FORK]
+-------------------------------
+SSL (Sulfur Standard Libs), Sulfur's former embedded QSL-fork
+Fabric-compatibility shim, has been retired along with Quilt support
+(see Section 7, v1.16). Its former responsibilities — routing Fabric
+mod entrypoints, mixin configs, and API calls into Sulfur — are now
+handled natively by Sulfur's absorbed Fabric Loader subsystem
+(Section 2/5), with no translation/remapping step. Its former source
+tree (sulfur/ssl/: FabricApiForwarder.java, FabricModAdapter.java,
+FabricModMetadata.java, SslTransformer.java,
+SulfurFabricLoaderBridge.java, SulfurSSL.java) is to be removed;
+FabricModAdapter's and FabricModMetadata's fabric.mod.json parsing
+logic is the one part worth carrying forward as-is into the new
+Fabric ecosystem subsystem, since it already does the real parsing
+work independent of Quilt.
+
+
+4. LIVE MOD SCANNING / HOT-RELOAD
+------------------------------------
+Mods can be added on the go, without restarting the JVM:
+  - Sulfur scans the mods folder(s) once per minute for changes (new
+    files, removed files, or modified files).
+  - When a new or changed mod is detected, it is picked up and loaded
+    in-place through the relevant ecosystem subsystem (NeoForge/FML or
+    Fabric, via Sulfur) without requiring a restart.
+  - This is a periodic poll (every minute), not a filesystem-watcher
+    push model — simpler to reason about and avoids platform-specific
+    filesystem-event APIs, at the cost of up to a ~1-minute detection
+    delay. Revisit if that delay proves too slow in practice.
+
+
+5. SULFUR — UNIFIED MINECRAFT LOADER
+----------------------------------------
+Background: NeoForge and Fabric Loader each assume they are the ONLY
+thing bootstrapping the JVM. Concretely, each owns:
+  1. Its own pre-classpath bootstrap + classloader chain:
+       - NeoForge: BootstrapLauncher (JVM entry point, sets up the
+         Java Platform Module System layer before anything else
+         exists, locates/prepares the classpath and modulepath) hands
+         off to ModLauncher (the TransformingClassLoader — decides
+         per-class whether ASM transformation applies, does service-
+         loading for ITransformationService/launch-plugin contracts,
+         handles argument parsing/launch target selection). NeoForge
+         itself doesn't implement either of these directly — they're
+         inherited from the separate ModLauncher + BootstrapLauncher +
+         SecureJarHandler + FancyModLoader (FML) stack NeoForge is
+         built on top of. The `neoforge-1.21.4` upstream clone contains
+         gameplay patches + mixins only, NOT the bootstrap — that
+         lives in the four repos listed below.
+       - Fabric Loader: CONFIRMED against the real
+         FabricMC/fabric-loader source (cloned 2026-08-15, master @
+         b907c5b) — Fabric Loader is actually a ONE-stage chain, not
+         two. Knot.launch()/Knot.init() (net.fabricmc.loader.impl.
+         launch.knot.Knot) is the entry point itself: it reads
+         java.class.path directly, resolves the GameProvider, then
+         builds KnotClassLoaderInterface inline. There is no separate
+         BootLauncher-equivalent pre-classpath stage the way Quilt's
+         fork has. Quilt's BootLauncher turns out to be something
+         Quilt itself added on top when forking Fabric Loader, not
+         something inherited from Fabric — the two-stage shape Section
+         5 previously assumed for "parity with Quilt" does NOT hold.
+         See the RESOLVED note below for the full finding and its
+         implication for Sulfur's bootstrap/ absorption.
+  2. A single registered Sponge Mixin IMixinService — Mixin's
+     bootstrap only supports one active service per JVM. Fabric Loader
+     registers its own Knot-based IMixinService; FML registers its own
+     ModLauncher-based service. Both attempting to register in the
+     same process is a direct conflict, not a resource-usage problem.
+  3. ASM transformer ordering and mod/jar discovery on the classpath.
+
+Running NeoForge and Fabric Loader "side by side" as two separate
+loader processes in one JVM does not resolve this — it recreates it.
+Two classloaders can load the same class twice under different
+identities, producing ClassCastExceptions the moment a Fabric mod and
+a NeoForge mod interact through a shared Minecraft class.
+
+The fix — MERGE, don't run side-by-side, and don't leave a handoff
+boundary between the pieces that get merged:
+Sulfur is the single owned component covering JVM entry, the
+classload/transform engine, and the transforming classloader — with
+no internal handoff boundary between what used to be separate
+processes. It absorbs THREE upstream pieces, not four — corrected from prior
+revisions once the Fabric side was independently confirmed (see
+RESOLVED note below):
+  - BootstrapLauncher (NeoForge side — JVM entry/module setup)
+  - ModLauncher (NeoForge side — classload/transform engine +
+    transforming classloader)
+  - Fabric Loader's Knot (net.fabricmc.loader.impl.launch.knot.Knot —
+    the entry point, classloader, and transformer combined; no
+    separate pre-classpath stage exists to absorb on the Fabric side)
+Fabric's jar-in-jar mod packaging goes through the JDK's own built-in
+jar: URI FileSystemProvider (confirmed via git grep across Fabric
+Loader's real source — zero custom FileSystemProvider
+implementations exist in the repo). Sulfur does not need to implement
+or reproduce a Fabric-side filesystem provider at all — it only needs
+to ensure the JDK's standard jar: provider is available, which it
+already is by default in any JVM. This is a simpler absorption than
+what prior spec revisions assumed by analogy to Quilt's BootLauncher.
+
+RESOLVED (NeoForge side, unchanged from prior spec revision):
+NeoForge's BootstrapLauncher does have a custom-filesystem-provider
+step, architected differently than Fabric/Quilt's. SecureJarHandler
+registers ONE provider, UnionFileSystemProvider (scheme "union"), via
+a standard `provides java.nio.file.spi.FileSystemProvider with
+UnionFileSystemProvider` declaration in its own module-info.java —
+not multiple separate schemes the way Fabric/Quilt's filesystem
+providers work. Critically, this isn't a manual pre-classpath
+bootstrapping step: bootstraplauncher's module-info.java has a hard
+`requires cpw.mods.securejarhandler`, so securejarhandler (and the
+"union" provider it registers) is present in the very first module
+layer BootstrapLauncher constructs, available via normal ServiceLoader
+from the start.
+Implication for Sulfur's bootstrap/ (BootstrapLauncher absorption): no
+separate manual filesystem-provider registration phase is needed on
+the NeoForge side. It's a packaging requirement instead — Sulfur's own
+initial module set must include the union-filesystem-provider classes
+(or Sulfur's own equivalent) as a hard dependency from the first
+module layer, the same way bootstraplauncher bundles securejarhandler,
+so ServiceLoader finds it without any extra step.
+
+RESOLVED (Fabric side, confirmed 2026-08-15 against
+FabricMC/fabric-loader master @ b907c5b, cloned to
+C:\sulfur\upstream\fabric-loader): Fabric Loader has NO imperative
+pre-classpath stage and NO custom FileSystemProvider — neither of the
+two things this item was checking for. `Knot.init()`
+(src/main/java/net/fabricmc/loader/impl/launch/knot/Knot.java) reads
+`System.getProperty("java.class.path")` directly and builds its
+classpath list and classloader inline, with no separate bootstrap
+object handed off to it the way Quilt's BootLauncher hands off to
+Knot. `git grep FileSystemProvider` across the entire Fabric Loader
+source tree returns zero matches; jar-in-jar handling in
+`FileSystemUtil.java` goes through the JDK's own built-in `jar:` URI
+scheme (standard `ZipFileSystemProvider`), not a custom-registered
+scheme the way Quilt's j:/m:/u:/z: providers are. Conclusion: Quilt's
+BootLauncher + its four custom filesystem schemes were added BY QUILT
+when it forked Fabric Loader — they are not inherited Fabric
+behavior. This means Sulfur's Fabric-side absorption is actually
+SIMPLER than the Quilt-side absorption it's replacing: no separate
+pre-classpath bootstrap component to build, and no custom
+filesystem-provider registration needed since the JDK's built-in jar:
+provider is already present in any JVM by default. Section 2's
+"FOUR upstream pieces" and the list just above are corrected to
+reflect this (now three: BootstrapLauncher, ModLauncher, Knot).
+
+Sulfur also owns exactly ONE Mixin IMixinService, unifying what Knot
+and ModLauncher/FML each separately provided. This substrate is always
+active (it can't be "lazy" — it has to be in place before any class
+loads, regardless of which mods are present). Sulfur's Mixin service
+dispatches mixin configs from both NeoForge-declared and
+Fabric-declared mods through one transformation pipeline, resolving
+the IMixinService singleton conflict at the root.
+
+FABRIC NATIVE, NOT TRANSLATED: Fabric mods are no longer routed
+through a translation/compat shim (the old SSL/QSL-remap approach).
+Sulfur's absorbed Fabric ecosystem subsystem implements Fabric Loader
+API and Fabric API surfaces directly, so Fabric mods load against a
+faithful reproduction of the real thing rather than a remapped-to-
+another-loader approximation. This removes the remap-table maintenance
+burden and the silent-passthrough failure mode the old SslTransformer
+had for any Fabric API class it didn't explicitly cover.
+
+All loader functionality is owned by Sulfur. Sulfur internally
+implements and unifies the functionality originating from NeoForge/FML
+and Fabric Loader. There are no independent NeoForge or Fabric loader
+subsystems above it.
+
+The real risk, worth naming honestly: Sulfur is the single most
+load-bearing component in the entire project. Right now NeoForge mods
+only need to trust ModLauncher's contract, and Fabric mods only need
+to trust Knot's (or FabricLauncherBase's) — with Sulfur, both
+ecosystems' unmodified mods need Sulfur to faithfully reproduce
+whatever internal surface they actually touch, not just documented
+APIs (FML coremods and some Fabric mods reach into loader internals
+directly). Concrete next step: grep fancymodloader-1.21.4,
+modlauncher, and fabric-loader for exactly what surface area gets
+touched by real mods, so Sulfur's compatibility target is based on
+actual usage, not just the clean public API. (In progress — see
+tools/surface-area-notes.md; only the fancymodloader-1.21.4 pass is
+done so far. The Quilt-targeted portion of this work is now retargeted
+at FabricMC/fabric-loader directly — see OPEN note above.)
+
+Upstream reference clones used for this work (see Section 7 standing
+decisions for the full list and exact paths):
+  - FancyModLoader (neoforged/FancyModLoader @ branch 1.21.4) — FML's
+    mod-loading system, built on top of ModLauncher. This is NeoForge's
+    actual "loader," as distinct from the neoforge-1.21.4 repo which is
+    gameplay content/patches.
+  - ModLauncher (McModLauncher/modlauncher, main) — the classloading +
+    ASM transformation engine FML/NeoForge boots through. Note this
+    lives under the original McModLauncher org, not neoforged —
+    NeoForge consumes it upstream rather than forking it.
+  - BootstrapLauncher (McModLauncher/bootstraplauncher, main) — the JVM
+    entry-point stub that sets up module layers before ModLauncher
+    starts.
+  - SecureJarHandler (McModLauncher/securejarhandler, main) — handles
+    jar-in-jar / secure module path resolution used by ModLauncher.
+  - fabric-loader (FabricMC/fabric-loader, main/master — no dedicated
+    1.21.4 branch; Fabric Loader versions by loader semver, not MC
+    version, and stays forward/backward compatible, so master is the
+    correct ref) — the actual upstream Fabric Loader repo (Knot is
+    the whole entry+classload+transform chain, see RESOLVED note
+    above). Replaces quilt-loader as the reference source for this
+    side of the absorption (see Section 7, v1.16). CLONED 2026-08-15
+    to C:\sulfur\upstream\fabric-loader @ b907c5b.
+  - Mixin (FabricMC/Mixin @ tag 0.17.3+mixin.0.8.7) — the actual
+    IMixinService implementation source for the single, unified Mixin
+    service Sulfur registers. Vanilla SpongePowered/Mixin (both on
+    master and at its own releases/0.8.7 tag) does NOT declare the SPI
+    surface (getFeatureValidator(), getAdviceProvider()) that Fabric
+    Loader's real Knot-based IMixinService overrides and that Sulfur's
+    own service needs to match — those methods only exist in
+    FabricMC's actively-maintained fork, which is what Fabric/most of
+    the modern ecosystem actually republish under the
+    net.fabricmc:sponge-mixin coordinates. Confirmed against the real
+    tagged source, not assumed.
+
+
+6. IMPLEMENTATION NOTES
+---------------------------
+Sulfur, while a genuinely hard ASM/classloading problem, has real
+prior art to study and adapt — Knot, ModLauncher, BootstrapLauncher,
+FML, and Fabric Loader are all real, working, inspectable code, all
+now cloned locally (see Section 7 upstream clone list).
+
+Now that the void01 baseplate/client-loader layer and the Quilt/SSL
+translation layer have both been dropped, Sulfur's own unified-loader
+work (Section 5) is the entire project — there is no separate, harder,
+unprecedented subsystem sitting above it, and no remap-table
+maintenance burden alongside it. The core ongoing risk is the one
+named in Section 5: faithfully reproducing whatever internal surface
+real NeoForge/FML and Fabric mods actually touch, not just the
+documented public API.
+
+CARRYOVER FROM SSL: FabricModAdapter.java and FabricModMetadata.java
+(fabric.mod.json parsing, entrypoint/mixin-config discovery) are
+loader-agnostic and should be moved into the new Fabric ecosystem
+subsystem essentially as-is — they never actually depended on Quilt,
+only on parsing the standard fabric.mod.json format. SslTransformer.java,
+FabricApiForwarder.java, and SulfurFabricLoaderBridge.java are
+retired outright; their job (Fabric API/Loader class availability) is
+now the native Fabric ecosystem subsystem's job, implemented directly
+rather than stubbed/remapped.
+
+
+7. DECISION LOG (chronological)
+----------------------------------
+  v0.1 - Standalone cross-loader modloader, forked from Fabric AND
+       NeoForge, supporting Quilt/Fabric/Forge/NeoForge mods natively
+       via its own `.tars` mod format.                    (SUPERSEDED)
+
+  v0.2 - Fork of NeoForge + Quilt as base, made cross-compatible with
+       each other, with a Fabric compatibility layer added on top of
+       Quilt (since Quilt already speaks most of Fabric via QSL).
+                                                            (SUPERSEDED)
+
+  v0.3 - Reimagined as a Lunar/Badlion-style CLIENT in its own right.
+                                                            (SUPERSEDED)
+
+  v1 - void01 is a BASEPLATE/foundation SDK that third-party clients
+       are built on top of. Mods remain entirely the domain of
+       Fabric/NeoForge/Quilt (no vanilla Forge — NeoForge only).
+       Clients are packaged as a single active `client.tar`, replacing
+       `.jar`-based client distribution.                  (SUPERSEDED)
+
+  v1.1 - Same as v1, plus: loaders are no longer assumed to
+       all run all the time. Each of Fabric/NeoForge/Quilt is only
+       started if a currently-active mod actually needs it, to save
+       resources. Still no loader-selection step for the user — only
+       a per-mod choice of which loader-specific version to load.
+                                                            (SUPERSEDED)
+
+  v1.11 - Same as v1.1, plus: dropped the standalone Fabric
+       loader entirely. Loader layer is now just NeoForge + Quilt.
+       Fabric-built mods run through Quilt via a void-built
+       Fabric->Quilt translation layer, forked from QSL.  (SUPERSEDED)
+
+  v1.12 - Same as v1.11, plus: NeoForge and Quilt no longer run as two
+       side-by-side loader processes. Their bootstrap substrate
+       (classloader + Sponge Mixin IMixinService) is unified into a
+       single sulfur-owned loader core.                   (SUPERSEDED)
+
+  v1.13 - Same as v1.12, plus: formally named the unified loader core
+       "Abyss." Corrected its scope to absorb FOUR upstream pieces,
+       not three. Renamed the forked-QSL Fabric-compat layer to VSL
+       (Void Standard Libraries), expanded to talk to both the
+       NeoForge and Quilt subsystems. Added live hot-reload. Corrected
+       the Mixin source to FabricMC/Mixin.                (SUPERSEDED)
+
+  v1.14 - Same as v1.13, plus: VSL embedded directly inside Abyss as a
+       subsystem (abyss/vsl/), built alongside Abyss rather than as a
+       separate phase.                                    (SUPERSEDED)
+
+  v1.15.0 - Full pivot: the sulfur baseplate/client-loader layer
+       is dropped entirely — no more third-party client.tar hosting,
+       no rendering-hook API, no client lifecycle/account/server-list/
+       settings/update-check responsibilities, no client-sdk. Those
+       were sulfur's job and sulfur no longer exists as a product.
+       "Abyss" is renamed "Sulfur" and released standalone — Sulfur
+       does not depend on sulfur (and never truly needed to; the two
+       were always decoupled, just designed to compile together).
+       "VSL" is renamed "SSL" (Sulfur Standard Libs), same scope and
+       embedding as before. Package namespace is lol.void01n.sulfur.*
+       (the sulfurn handle stays for author credit; the product name
+       does not). Source tree's baseplate/, client-sdk/, and top-level
+       vsl/ directories are removed; only sulfur/ remains. Sections 3
+       ("sulfur baseplate responsibilities"), 4 (client.tar format),
+       and 6 (live client scanning) from the old spec are retired —
+       client.tar, client lifecycle, and the whole client layer no
+       longer exist in this project.                      (SUPERSEDED)
+
+  v1.16 - Quilt dropped entirely as a loader ecosystem.
+       Fabric Loader is absorbed NATIVELY instead — no longer reached
+       via a Quilt/QSL translation shim. Rationale: Quilt Loader is
+       itself a fork of Fabric Loader, so the absorption work already
+       scoped for Quilt's BootLauncher+Knot chain carries over
+       directly onto Fabric Loader's own original bootstrap+Knot
+       chain — this is a substitution of upstream target, not new
+       architectural scope. Fabric's mod ecosystem is also
+       substantially larger than Quilt's, and most Quilt-compatible
+       mods already ship a fabric.mod.json for cross-loader support,
+       so native-Fabric absorption covers the large majority of what
+       the old Quilt+SSL path was reaching for anyway. SSL (Sulfur
+       Standard Libs), the QSL-forked Fabric->Quilt class-reference
+       remapping shim, is retired along with Quilt — Fabric mods now
+       run against a native reproduction of the real Fabric API/Loader
+       surface, removing the remap-table maintenance burden and the
+       silent-passthrough failure mode unmapped Fabric API classes
+       previously hit. sulfur/ssl/'s fabric.mod.json parsing logic
+       (FabricModAdapter, FabricModMetadata) carries forward into the
+       new Fabric ecosystem subsystem as-is, since it was already
+       loader-agnostic. SslTransformer, FabricApiForwarder, and
+       SulfurFabricLoaderBridge are retired outright. Upstream
+       reference target changes from QuiltMC/quilt-loader to
+       FabricMC/fabric-loader — NOT yet cloned locally as of this
+       revision (see Section 6/7 status); the Quilt-targeted portion
+       of the Section 0 surface-area grep is retargeted at Fabric
+       Loader's real source and still needs independent confirmation
+       (Fabric's own filesystem-provider/pre-classpath setup has not
+       been verified to match the Quilt fork 1:1 — see OPEN note in
+       Section 5). Known accepted tradeoff: native Quilt-only mods
+       (no fabric.mod.json fallback, QSL-only API usage) no longer
+       run under Sulfur.
+
+  v1.17 (CURRENT) - FabricMC/fabric-loader cloned locally (master @
+       b907c5b, to C:\sulfur\upstream\fabric-loader) and independently
+       verified, resolving the v1.16 OPEN item. Finding: Fabric Loader
+       is a ONE-stage chain, not two — Knot.init() is the entry point
+       itself with no separate pre-classpath bootstrap object, and
+       Fabric Loader registers no custom FileSystemProvider at all
+       (jar-in-jar goes through the JDK's built-in jar: scheme).
+       Quilt's BootLauncher and its four custom filesystem schemes
+       (j:/m:/u:/z:) were added BY QUILT when forking Fabric Loader,
+       not inherited from it — so the "same shape as Quilt" assumption
+       in v1.16 was wrong on this specific point. Section 2 and
+       Section 5 corrected: Sulfur absorbs THREE upstream pieces for
+       the loader layer, not four (BootstrapLauncher, ModLauncher,
+       Knot) — the Fabric-side absorption is simpler than the
+       Quilt-side absorption it replaced, not equivalent to it.
+       Also discovered: PowerShell invoked via vm-shell (both
+       command_line and argv modes, -Command and -NonInteractive
+       tried) produces no captured stdout in this environment, even
+       for trivial output like Write-Output. `git grep` is the
+       reliable alternative for searching within any of the upstream
+       clones (all are git repos); `cmd /c dir` works fine for listing.
+       Tooling note in "Other standing decisions" below updated to
+       reflect this instead of recommending PowerShell Select-String.
+
+  Known tradeoff (accepted): native Quilt-only mods (no
+       fabric.mod.json fallback, QSL-only API usage) no longer run
+       under Sulfur as of v1.16.
+
+  Other standing decisions:
+  - Target Minecraft version: 1.21.4 (baseline build). Sulfur includes
+    a forward-compatibility layer for future MC versions (1.21.5+)
+    without rebuilding Sulfur. Backwards compatibility: old mods
+    (1.12.2 and up) run on new Sulfur via a remapping layer.
+  - Upstream reference clones kept on disk at:
+      C:\sulfur\upstream\neoforge-1.21.4      (neoforged/NeoForge @
+                                                1.21.4 — gameplay
+                                                patches/mixins only,
+                                                NOT the bootstrap)
+      C:\sulfur\upstream\fabric-loader          (FabricMC/fabric-loader,
+                                                master @ b907c5b —
+                                                CLONED 2026-08-15;
+                                                replaces quilt-loader
+                                                as the Fabric-side
+                                                reference; no dedicated
+                                                1.21.4 branch exists,
+                                                master is correct, see
+                                                Section 5/7)
+      C:\sulfur\upstream\fancymodloader-1.21.4 (neoforged/FancyModLoader
+                                                @ branch 1.21.4 — FML's
+                                                actual mod-loading
+                                                system; NeoForge's real
+                                                "loader," as opposed to
+                                                the neoforge-1.21.4 repo
+                                                above)
+      C:\sulfur\upstream\modlauncher           (McModLauncher/
+                                                modlauncher, main —
+                                                classloading + ASM
+                                                transform engine FML
+                                                boots through; lives
+                                                under the original
+                                                McModLauncher org, not
+                                                neoforged)
+      C:\sulfur\upstream\bootstraplauncher     (McModLauncher/
+                                                bootstraplauncher,
+                                                main — JVM entry stub
+                                                that sets up module
+                                                layers before
+                                                ModLauncher starts)
+      C:\sulfur\upstream\securejarhandler      (McModLauncher/
+                                                securejarhandler,
+                                                main — jar-in-jar /
+                                                secure module path
+                                                handling used by
+                                                ModLauncher)
+      C:\sulfur\upstream\mixin                 (FabricMC/Mixin @ tag
+                                                0.17.3+mixin.0.8.7 —
+                                                NOT vanilla
+                                                SpongePowered/Mixin;
+                                                the actual source for
+                                                Sulfur's single
+                                                registered
+                                                IMixinService, see
+                                                Section 5)
+    RETIRED (v1.16): C:\sulfur\upstream\quilt-loader and
+      C:\sulfur\upstream\qsl-1.21.5 are no longer part of the active
+      reference set — Quilt and SSL are both dropped. Left on disk
+      only as historical reference; not used for any forward work.
+    All kept clones are for reference/integration testing, not for
+    forking directly, EXCEPT fabric-loader once cloned, which WILL be
+    forked directly as Sulfur's Fabric-side absorption target (see
+    below) — the other four (fancymodloader-1.21.4, modlauncher,
+    bootstraplauncher, securejarhandler) plus mixin remain
+    study/reference only, adapted rather than forked wholesale.
+  - Tooling note: do NOT use `findstr` when filtering command output in
+    this project (e.g. piping git/gradle output) — it does not work
+    reliably in this environment. PowerShell (`Select-String` or any
+    other cmdlet) ALSO does not work reliably here as of v1.17 —
+    invoking `powershell` via vm-shell (command_line or argv mode)
+    produces no captured stdout at all, even for a bare `Write-Output`.
+    Use `git grep`/`git ls-remote --tags <url> "<pattern>"` for
+    searching within any upstream clone (all are git repos), and plain
+    `cmd /c dir` (or `git -C <repo> ls-files`) for listing.
+  - Implementation has been given the go-ahead ("go") and is underway.
